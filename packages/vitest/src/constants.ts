@@ -1,33 +1,34 @@
-import url from 'url'
-import { resolve } from 'pathe'
-import { isNode } from './utils/env'
-
-export const rootDir = isNode ? resolve(url.fileURLToPath(import.meta.url), '../../') : import.meta.url
-export const distDir = isNode ? resolve(url.fileURLToPath(import.meta.url), '../../dist') : import.meta.url
-
 // if changed, update also jsdocs and docs
 export const defaultPort = 51204
-
-export const EXIT_CODE_RESTART = 43
+export const defaultBrowserPort = 63315
+export const defaultInspectPort = 9229
 
 export const API_PATH = '/__vitest_api__'
 
-export const configFiles = [
-  'vitest.config.ts',
-  'vitest.config.mts',
-  'vitest.config.cts',
-  'vitest.config.js',
-  'vitest.config.mjs',
-  'vitest.config.cjs',
-  'vite.config.ts',
-  'vite.config.mts',
-  'vite.config.cts',
-  'vite.config.js',
-  'vite.config.mjs',
-  'vite.config.cjs',
+export const extraInlineDeps: RegExp[] = [
+  /^(?!.*node_modules).*\.mjs$/,
+  /^(?!.*node_modules).*\.cjs\.js$/,
+  // Vite client
+  /vite\w*\/dist\/client\/env.mjs/,
 ]
 
-export const globalApis = [
+export const CONFIG_NAMES: string[] = ['vitest.config', 'vite.config']
+
+const WORKSPACES_NAMES = ['vitest.workspace', 'vitest.projects']
+
+export const CONFIG_EXTENSIONS: string[] = ['.ts', '.mts', '.cts', '.js', '.mjs', '.cjs']
+
+export const configFiles: string[] = CONFIG_NAMES.flatMap(name =>
+  CONFIG_EXTENSIONS.map(ext => name + ext),
+)
+
+const WORKSPACES_EXTENSIONS = [...CONFIG_EXTENSIONS, '.json']
+
+export const workspacesFiles: string[] = WORKSPACES_NAMES.flatMap(name =>
+  WORKSPACES_EXTENSIONS.map(ext => name + ext),
+)
+
+export const globalApis: string[] = [
   // suite
   'suite',
   'test',
@@ -48,4 +49,6 @@ export const globalApis = [
   'afterAll',
   'beforeEach',
   'afterEach',
+  'onTestFinished',
+  'onTestFailed',
 ]

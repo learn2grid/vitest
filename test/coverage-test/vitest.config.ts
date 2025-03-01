@@ -1,26 +1,25 @@
-import { defineConfig } from 'vite'
-import vue from '@vitejs/plugin-vue'
+import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
-  plugins: [
-    vue(),
-  ],
-  define: {
-    MY_CONSTANT: '"my constant"',
-  },
   test: {
-    threads: !!process.env.THREAD,
-    include: [
-      'test/*.test.ts',
-    ],
-    exclude: [
-      'coverage-test/**/*',
-    ],
-    coverage: {
-      enabled: true,
-      clean: true,
-      all: true,
-      reporter: ['html', 'text', 'lcov', 'json'],
+    reporters: 'verbose',
+    isolate: false,
+    poolOptions: {
+      threads: {
+        // Tests may have side effects, e.g. writing files to disk,
+        singleThread: true,
+      },
+    },
+    onConsoleLog(log) {
+      if (log.includes('ERROR: Coverage for')) {
+        // Ignore threshold error messages
+        return false
+      }
+
+      if (log.includes('Updating thresholds to configuration file.')) {
+        // Ignore threshold updating messages
+        return false
+      }
     },
   },
 })

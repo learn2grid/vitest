@@ -1,32 +1,25 @@
 import { KEYS } from './jsdom-keys'
 
-const allowRewrite = [
-  'Event',
-  'EventTarget',
-  'MessageEvent',
-  // implemented in Node 18
-  'ArrayBuffer',
-  // implemented in Node 18
-  'Blob',
-]
+const skipKeys = ['window', 'self', 'top', 'parent']
 
-const skipKeys = [
-  'window',
-  'self',
-  'top',
-  'parent',
-]
-
-export function getWindowKeys(global: any, win: any) {
-  const keys = new Set(KEYS.concat(Object.getOwnPropertyNames(win))
-    .filter((k) => {
-      if (skipKeys.includes(k))
+export function getWindowKeys(
+  global: any,
+  win: any,
+  additionalKeys: string[] = [],
+): Set<string> {
+  const keysArray = [...additionalKeys, ...KEYS]
+  const keys = new Set(
+    keysArray.concat(Object.getOwnPropertyNames(win)).filter((k) => {
+      if (skipKeys.includes(k)) {
         return false
-      if (k in global)
-        return allowRewrite.includes(k)
+      }
+      if (k in global) {
+        return keysArray.includes(k)
+      }
 
       return true
-    }))
+    }),
+  )
 
   return keys
 }
@@ -41,29 +34,44 @@ interface PopulateOptions {
   // has a priority for getting implementation from symbols
   // (global doesn't have these symbols, but window - does)
   bindFunctions?: boolean
+
+  additionalKeys?: string[]
 }
 
-export function populateGlobal(global: any, win: any, options: PopulateOptions = {}) {
+export function populateGlobal(
+  global: any,
+  win: any,
+  options: PopulateOptions = {},
+): {
+    keys: Set<string>
+    skipKeys: string[]
+    originals: Map<string | symbol, any>
+  } {
   const { bindFunctions = false } = options
-  const keys = getWindowKeys(global, win)
+  const keys = getWindowKeys(global, win, options.additionalKeys)
 
-  const originals = new Map<string | symbol, any>(
-    allowRewrite.filter(key => key in global).map(key => [key, global[key]]),
-  )
+  const originals = new Map<string | symbol, any>()
 
   const overrideObject = new Map<string | symbol, any>()
   for (const key of keys) {
-    const boundFunction = bindFunctions
-      && typeof win[key] === 'function'
-      && !isClassLikeName(key)
-      && win[key].bind(win)
+    const boundFunction
+      = bindFunctions
+        && typeof win[key] === 'function'
+        && !isClassLikeName(key)
+        && win[key].bind(win)
+
+    if (KEYS.includes(key) && key in global) {
+      originals.set(key, global[key])
+    }
 
     Object.defineProperty(global, key, {
       get() {
-        if (overrideObject.has(key))
+        if (overrideObject.has(key)) {
           return overrideObject.get(key)
-        if (boundFunction)
+        }
+        if (boundFunction) {
           return boundFunction
+        }
         return win[key]
       },
       set(v) {
@@ -78,8 +86,18 @@ export function populateGlobal(global: any, win: any, options: PopulateOptions =
   global.top = global
   global.parent = global
 
-  if (global.global)
+  if (global.global) {
     global.global = global
+  }
+
+  // rewrite defaultView to reference the same global context
+  if (global.document && global.document.defaultView) {
+    Object.defineProperty(global.document, 'defaultView', {
+      get: () => global,
+      enumerable: true,
+      configurable: true,
+    })
+  }
 
   skipKeys.forEach(k => keys.add(k))
 

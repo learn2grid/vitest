@@ -2,6 +2,11 @@ import { assert, expect, it, suite, test } from 'vitest'
 import { two } from '../src/submodule'
 import { timeout } from '../src/timeout'
 
+const testPath = expect.getState().testPath
+if (!testPath || !testPath.includes('basic.test.ts')) {
+  throw new Error(`testPath is not correct: ${testPath}`)
+}
+
 test('Math.sqrt()', async () => {
   assert.equal(Math.sqrt(4), two)
   assert.equal(Math.sqrt(2), Math.SQRT2)
@@ -57,4 +62,9 @@ it('timeout', () => new Promise(resolve => setTimeout(resolve, timeout)))
 it.fails('deprecated done callback', (done) => {
   // @ts-expect-error deprecated done callback is not typed
   done()
+})
+
+test('escaping', () => {
+  expect(['\\123']).toEqual(['\\123'])
+  expect('\\123').toEqual('\\123')
 })

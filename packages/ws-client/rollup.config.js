@@ -1,20 +1,22 @@
-import esbuild from 'rollup-plugin-esbuild'
-import dts from 'rollup-plugin-dts'
-import resolve from '@rollup/plugin-node-resolve'
 import commonjs from '@rollup/plugin-commonjs'
 import json from '@rollup/plugin-json'
-import alias from '@rollup/plugin-alias'
+import resolve from '@rollup/plugin-node-resolve'
+import dts from 'rollup-plugin-dts'
+import esbuild from 'rollup-plugin-esbuild'
 
-const entry = [
-  'src/index.ts',
-]
+const entry = ['src/index.ts']
 
 const external = [
   'ws',
   'birpc',
   'worker_threads',
+  'node:worker_threads',
+  'fs',
+  'node:fs',
   'vitest',
   'inspector',
+  '@vitest/snapshot/environment',
+  '@vitest/snapshot/manager',
 ]
 
 export default () => [
@@ -26,32 +28,23 @@ export default () => [
     },
     external,
     plugins: [
-      alias({
-        entries: [
-          { find: /^node:(.+)$/, replacement: '$1' },
-        ],
-      }),
       resolve({
         preferBuiltins: true,
       }),
       json(),
       commonjs(),
       esbuild({
-        target: 'node14',
+        target: 'node18',
       }),
     ],
   },
   {
-    input: [
-      'src/index.ts',
-    ],
+    input: ['src/index.ts'],
     output: {
       file: 'dist/index.d.ts',
       format: 'esm',
     },
     external,
-    plugins: [
-      dts(),
-    ],
+    plugins: [dts()],
   },
 ]
