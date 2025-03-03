@@ -1,9 +1,12 @@
-import esbuild from 'rollup-plugin-esbuild'
-import dts from 'rollup-plugin-dts'
+import { createRequire } from 'node:module'
 import commonjs from '@rollup/plugin-commonjs'
 import json from '@rollup/plugin-json'
-import alias from '@rollup/plugin-alias'
-import pkg from './package.json'
+import nodeResolve from '@rollup/plugin-node-resolve'
+import dts from 'rollup-plugin-dts'
+import esbuild from 'rollup-plugin-esbuild'
+
+const require = createRequire(import.meta.url)
+const pkg = require('./package.json')
 
 const entries = {
   index: 'src/index.ts',
@@ -13,21 +16,16 @@ const entries = {
 const external = [
   ...Object.keys(pkg.dependencies || {}),
   ...Object.keys(pkg.peerDependencies || {}),
-  'vitest',
-  'vitest/node',
+  /^@?vitest(\/|$)/,
   'vite-node/utils',
 ]
 
 const plugins = [
-  alias({
-    entries: [
-      { find: /^node:(.+)$/, replacement: '$1' },
-    ],
-  }),
   json(),
+  nodeResolve(),
   commonjs(),
   esbuild({
-    target: 'node14',
+    target: 'node18',
   }),
 ]
 
@@ -42,15 +40,13 @@ export default () => [
     plugins,
   },
   {
-    input: entries,
+    input: 'src/pure.ts',
     output: {
       dir: process.cwd(),
-      entryFileNames: '[name].d.ts',
+      entryFileNames: 'dist/[name].d.ts',
       format: 'esm',
     },
     external,
-    plugins: [
-      dts({ respectExternal: true }),
-    ],
+    plugins: [dts({ respectExternal: true })],
   },
 ]

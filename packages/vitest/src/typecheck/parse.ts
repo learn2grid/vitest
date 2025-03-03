@@ -1,9 +1,10 @@
-import path from 'node:path'
-import url from 'node:url'
-import { writeFile } from 'node:fs/promises'
-import { getTsconfig } from 'get-tsconfig'
-import type { TypecheckConfig } from '../types'
+import type { TypecheckConfig } from '../node/types/config'
 import type { RawErrsMap, TscErrorInfo } from './types'
+import { writeFile } from 'node:fs/promises'
+import os from 'node:os'
+import url from 'node:url'
+import { getTsconfig as getTsconfigContent } from 'get-tsconfig'
+import { basename, dirname, join, resolve } from 'pathe'
 
 const __dirname = url.fileURLToPath(new URL('.', import.meta.url))
 const newLineRegExp = /\r?\n/
@@ -17,8 +18,9 @@ export async function makeTscErrorInfo(
     !errFilePathPos
     || errMsgRawArr.length === 0
     || errMsgRawArr.join('').length === 0
-  )
+  ) {
     return ['unknown filepath', null]
+  }
 
   const errMsgRaw = errMsgRawArr.join('').trim()
 
@@ -26,21 +28,25 @@ export async function makeTscErrorInfo(
   const [errFilePath, errPos] = errFilePathPos
     .slice(0, -1) // removes the ')'
     .split('(')
-  if (!errFilePath || !errPos)
+  if (!errFilePath || !errPos) {
     return ['unknown filepath', null]
+  }
 
   const [errLine, errCol] = errPos.split(',')
-  if (!errLine || !errCol)
+  if (!errLine || !errCol) {
     return [errFilePath, null]
+  }
 
   // get errCode, errMsg
   const execArr = errCodeRegExp.exec(errMsgRaw)
-  if (!execArr)
+  if (!execArr) {
     return [errFilePath, null]
+  }
 
   const errCodeStr = execArr.groups?.errCode ?? ''
-  if (!errCodeStr)
+  if (!errCodeStr) {
     return [errFilePath, null]
+  }
 
   const line = Number(errLine)
   const col = Number(errCol)
@@ -57,41 +63,51 @@ export async function makeTscErrorInfo(
   ]
 }
 
-export async function getTsconfigPath(root: string, config: TypecheckConfig) {
-  const tempConfigPath = path.join(root, 'tsconfig.temp.json')
+export async function getTsconfig(root: string, config: TypecheckConfig): Promise<{
+  path: string
+  config: Record<string, any>
+}> {
+  const configName = config.tsconfig ? basename(config.tsconfig) : undefined
+  const configSearchPath = config.tsconfig
+    ? dirname(resolve(root, config.tsconfig))
+    : root
 
-  const configName = config.tsconfig?.includes('jsconfig.json')
-    ? 'jsconfig.json'
-    : undefined
+  const tsconfig = getTsconfigContent(configSearchPath, configName)
 
-  const tsconfig = getTsconfig(config.tsconfig || root, configName)
-
-  if (!tsconfig)
+  if (!tsconfig) {
     throw new Error('no tsconfig.json found')
+  }
+
+  const tsconfigName = basename(tsconfig.path, '.json')
+  const tempTsConfigName = `${tsconfigName}.vitest-temp.json`
+  const tempTsbuildinfoName = `${tsconfigName}.tmp.tsbuildinfo`
+
+  const tempConfigPath = join(
+    dirname(tsconfig.path),
+    tempTsConfigName,
+  )
 
   try {
     const tmpTsConfig: Record<string, any> = { ...tsconfig.config }
 
-    tmpTsConfig.compilerOptions ??= {}
+    tmpTsConfig.compilerOptions = tmpTsConfig.compilerOptions || {}
     tmpTsConfig.compilerOptions.emitDeclarationOnly = false
     tmpTsConfig.compilerOptions.incremental = true
-    tmpTsConfig.compilerOptions.tsBuildInfoFile = path.join(
-      __dirname,
-      'tsconfig.tmp.tsbuildinfo',
+    tmpTsConfig.compilerOptions.tsBuildInfoFile = join(
+      process.versions.pnp ? join(os.tmpdir(), 'vitest') : __dirname,
+      tempTsbuildinfoName,
     )
 
     const tsconfigFinalContent = JSON.stringify(tmpTsConfig, null, 2)
     await writeFile(tempConfigPath, tsconfigFinalContent)
-    return tempConfigPath
+    return { path: tempConfigPath, config: tmpTsConfig }
   }
   catch (err) {
-    throw new Error('failed to write tsconfig.temp.json', { cause: err })
+    throw new Error(`failed to write ${tempTsConfigName}`, { cause: err })
   }
 }
 
-export async function getRawErrsMapFromTsCompile(
-  tscErrorStdout: string,
-) {
+export async function getRawErrsMapFromTsCompile(tscErrorStdout: string): Promise<RawErrsMap> {
   const rawErrsMap: RawErrsMap = new Map()
 
   // Merge details line with main line (i.e. which contains file path)
@@ -99,28 +115,31 @@ export async function getRawErrsMapFromTsCompile(
     tscErrorStdout
       .split(newLineRegExp)
       .reduce<string[]>((prev, next) => {
-        if (!next)
+        if (!next) {
           return prev
-
-        else if (!next.startsWith(' '))
+        }
+        else if (!next.startsWith(' ')) {
           prev.push(next)
-
-        else
+        }
+        else {
           prev[prev.length - 1] += `\n${next}`
+        }
 
         return prev
       }, [])
       .map(errInfoLine => makeTscErrorInfo(errInfoLine)),
   )
   infos.forEach(([errFilePath, errInfo]) => {
-    if (!errInfo)
+    if (!errInfo) {
       return
+    }
 
-    if (!rawErrsMap.has(errFilePath))
+    if (!rawErrsMap.has(errFilePath)) {
       rawErrsMap.set(errFilePath, [errInfo])
-
-    else
+    }
+    else {
       rawErrsMap.get(errFilePath)?.push(errInfo)
+    }
   })
   return rawErrsMap
 }

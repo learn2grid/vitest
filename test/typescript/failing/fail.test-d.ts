@@ -8,9 +8,9 @@ describe('nested suite', () => {
   describe('nested 2', () => {
     test('failing test 2', () => {
       expectTypeOf(1).toBeVoid()
+      expectTypeOf(1).toBeUndefined()
     })
   })
 
   expectTypeOf(1).toBeVoid()
 })
-

@@ -1,7 +1,9 @@
-import { describe, expect, test } from 'vitest'
-import { assertTypes, deepClone, deepMerge, resetModules, toArray } from '../../../packages/vitest/src/utils'
-import { deepMergeSnapshot } from '../../../packages/vitest/src/integrations/snapshot/port/utils'
-import type { ModuleCacheMap } from '../../../packages/vite-node/src/types'
+import type { EncodedSourceMap } from '../../../packages/vite-node/src/types'
+import { assertTypes, deepClone, deepMerge, isNegativeNaN, objDisplay, objectAttr, toArray } from '@vitest/utils'
+import { beforeAll, describe, expect, test } from 'vitest'
+import { deepMergeSnapshot } from '../../../packages/snapshot/src/port/utils'
+import { ModuleCacheMap } from '../../../packages/vite-node/src/client'
+import { resetModules } from '../../../packages/vitest/src/runtime/utils'
 
 describe('assertTypes', () => {
   test('the type of value should be number', () => {
@@ -140,45 +142,162 @@ describe('deepClone', () => {
       value: 1,
       writable: false,
     })
+    Object.defineProperty(objB, 'writableValue', {
+      configurable: false,
+      enumerable: false,
+      value: 1,
+      writable: true,
+    })
     expect(deepClone(objB).value).toEqual(objB.value)
+    expect(Object.getOwnPropertyDescriptor(deepClone(objB), 'value')?.writable).toEqual(false)
+    expect(
+      Object.getOwnPropertyDescriptor(deepClone(objB), 'writableValue')?.writable,
+    ).toEqual(true)
+    expect(
+      Object.getOwnPropertyDescriptor(deepClone(objB, { forceWritable: true }), 'value')?.writable,
+    ).toEqual(true)
     const objC = Object.create(objB)
     expect(deepClone(objC).value).toEqual(objC.value)
     const objD: any = { name: 'd', ref: null }
     objD.ref = objD
     expect(deepClone(objD)).toEqual(objD)
   })
+
+  test('can clone classes with proxied enumerable getters', () => {
+    const obj = Symbol.for('aClass')
+    interface TestShape { a: number; b: string }
+    class A {
+      [obj]: TestShape
+      constructor(data: TestShape) {
+        this[obj] = data
+        return new Proxy(this, {
+          ownKeys() {
+            return Reflect.ownKeys(data)
+          },
+          getOwnPropertyDescriptor(target, p) {
+            return {
+              ...Reflect.getOwnPropertyDescriptor(data, p),
+              enumerable: true,
+            }
+          },
+        })
+      }
+
+      get a() {
+        return this[obj].a
+      }
+
+      get b() {
+        return this[obj].b
+      }
+    }
+    const shape = { a: 1 } as TestShape
+    Object.defineProperty(shape, 'b', {
+      configurable: true,
+      enumerable: true,
+      get: () => 'B',
+    })
+    const aClass = new A(shape)
+    expect(aClass.a).toEqual(1)
+    expect(aClass.b).toEqual('B')
+    expect(Object.keys(aClass)).toEqual(['a', 'b'])
+    expect(deepClone({ aClass })).toEqual({ aClass: new A({ a: 1, b: 'B' }) })
+  })
 })
 
 describe('resetModules doesn\'t resets only user modules', () => {
-  test('resets user modules', () => {
-    const moduleCache = new Map() as ModuleCacheMap
-    moduleCache.set('/some-module.ts', {})
-    moduleCache.set('/@fs/some-path.ts', {})
+  const mod = () => ({ evaluated: true, promise: Promise.resolve({}), resolving: false, exports: {}, map: {} as EncodedSourceMap })
 
+  const moduleCache = new ModuleCacheMap()
+  const modules = [
+    ['/some-module.ts', true],
+    ['/@fs/some-path.ts', true],
+    ['/node_modules/vitest/dist/index.js', false],
+    ['/node_modules/vitest-virtual-da9876a/dist/index.js', false],
+    ['/node_modules/some-module@vitest/dist/index.js', false],
+    ['/packages/vitest/dist/index.js', false],
+    ['mock:/some-module.ts', false],
+    ['mock:/@fs/some-path.ts', false],
+  ] as const
+
+  beforeAll(() => {
+    modules.forEach(([path]) => {
+      moduleCache.set(path, mod())
+    })
     resetModules(moduleCache)
-
-    expect(moduleCache.size).toBe(0)
   })
 
-  test('doesn\'t reset vitest modules', () => {
-    const moduleCache = new Map() as ModuleCacheMap
-    moduleCache.set('/node_modules/vitest/dist/index.js', {})
-    moduleCache.set('/node_modules/vitest-virtual-da9876a/dist/index.js', {})
-    moduleCache.set('/node_modules/some-module@vitest/dist/index.js', {})
-    moduleCache.set('/packages/vitest/dist/index.js', {})
+  test.each(modules)('Cache for %s is reset (%s)', (path, reset) => {
+    const cached = moduleCache.get(path)
 
-    resetModules(moduleCache)
+    if (reset) {
+      expect(cached).not.toHaveProperty('evaluated')
+      expect(cached).not.toHaveProperty('resolving')
+      expect(cached).not.toHaveProperty('exports')
+      expect(cached).not.toHaveProperty('promise')
+    }
+    else {
+      expect(cached).toHaveProperty('evaluated')
+      expect(cached).toHaveProperty('resolving')
+      expect(cached).toHaveProperty('exports')
+      expect(cached).toHaveProperty('promise')
+    }
 
-    expect(moduleCache.size).toBe(4)
+    expect(cached).toHaveProperty('map')
   })
+})
 
-  test('doesn\'t reset mocks', () => {
-    const moduleCache = new Map() as ModuleCacheMap
-    moduleCache.set('mock:/some-module.ts', {})
-    moduleCache.set('mock:/@fs/some-path.ts', {})
+describe('objectAttr', () => {
+  const arrow = (a: number) => a * 3
+  const func = function (a: number) {
+    return a * 3
+  }
 
-    resetModules(moduleCache)
+  test.each`
+    value                         | path            | expected
+    ${{ foo: 'bar' }}             | ${'foo'}        | ${'bar'}
+    ${{ foo: { bar: 'baz' } }}    | ${'foo'}        | ${{ bar: 'baz' }}
+    ${{ foo: { bar: 'baz' } }}    | ${'foo.bar'}    | ${'baz'}
+    ${{ foo: [{ bar: 'baz' }] }}  | ${'foo.0.bar'}  | ${'baz'}
+    ${{ foo: [1, 2, ['a']] }}     | ${'foo'}        | ${[1, 2, ['a']]}
+    ${{ foo: [1, 2, ['a']] }}     | ${'foo.2'}      | ${['a']}
+    ${{ foo: [1, 2, ['a']] }}     | ${'foo.2.0'}    | ${'a'}
+    ${{ foo: [[1]] }}             | ${'foo.0.0'}    | ${1}
+    ${{ deep: [[[1]]] }}          | ${'deep.0.0.0'} | ${1}
+    ${{ a: 1, b: 2, c: 3, d: 4 }} | ${'a'}          | ${1}
+    ${{ arrow }}                  | ${'arrow'}      | ${arrow}
+    ${{ func }}                   | ${'func'}       | ${func}
+  `('objectAttr($value, $path) -> $expected', ({ value, path, expected }) => {
+    expect(objectAttr(value, path)).toEqual(expected)
+  })
+})
 
-    expect(moduleCache.size).toBe(2)
+describe('objDisplay', () => {
+  test.each`
+  value | expected
+  ${'a'.repeat(100)} | ${`'${'a'.repeat(37)}…'`}
+  ${'🐱'.repeat(100)} | ${`'${'🐱'.repeat(18)}…'`}
+  ${`a${'🐱'.repeat(100)}…`} | ${`'a${'🐱'.repeat(18)}…'`}
+  `('Do not truncate strings anywhere but produce valid unicode strings for $value', ({ value, expected }) => {
+    // encodeURI can be used to detect invalid strings including invalid code-points
+    // note: our code should not split surrogate pairs, but may split graphemes
+    expect(() => encodeURI(objDisplay(value))).not.toThrow()
+    expect(objDisplay(value)).toEqual(expected)
+  })
+})
+
+describe('isNegativeNaN', () => {
+  test.each`
+  value | expected
+  ${Number.NaN} | ${false}
+  ${-Number.NaN} | ${true}
+  ${0} | ${false}
+  ${-0} | ${false}
+  ${1} | ${false}
+  ${-1} | ${false}
+  ${Number.POSITIVE_INFINITY} | ${false}
+  ${Number.NEGATIVE_INFINITY} | ${false}
+  `('isNegativeNaN($value) -> $expected', ({ value, expected }) => {
+    expect(isNegativeNaN(value)).toBe(expected)
   })
 })

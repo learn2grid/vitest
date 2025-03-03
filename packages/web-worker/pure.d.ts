@@ -1,3 +1,1 @@
-declare function defineWebWorker(): void;
-
-export { defineWebWorker };
+export * from './dist/pure.js'

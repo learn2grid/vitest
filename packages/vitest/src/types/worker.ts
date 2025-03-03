@@ -1,51 +1,52 @@
-import type { MessagePort } from 'worker_threads'
-import type { FetchFunction, ModuleCacheMap, RawSourceMap, ViteNodeResolveId } from 'vite-node'
+import type { CancelReason, FileSpecification, Task } from '@vitest/runner'
 import type { BirpcReturn } from 'birpc'
-import type { MockMap } from './mocker'
-import type { ResolvedConfig } from './config'
-import type { File, TaskResultPack, Test } from './tasks'
-import type { SnapshotResult } from './snapshot'
-import type { UserConsoleLog } from './general'
+import type { ModuleCacheMap, ModuleExecutionInfo, ViteNodeResolveId } from 'vite-node'
+import type { SerializedConfig } from '../runtime/config'
+import type { Environment } from './environment'
+import type { TransformMode } from './general'
+import type { RunnerRPC, RuntimeRPC } from './rpc'
 
-export interface WorkerContext {
+/** @deprecated unused */
+export type ResolveIdFunction = (
+  id: string,
+  importer?: string
+) => Promise<ViteNodeResolveId | null>
+
+export type WorkerRPC = BirpcReturn<RuntimeRPC, RunnerRPC>
+
+export interface ContextTestEnvironment {
+  name: string
+  transformMode?: TransformMode
+  options: Record<string, any> | null
+}
+
+export interface ContextRPC {
+  pool: string
+  worker: string
   workerId: number
-  port: MessagePort
-  config: ResolvedConfig
-  files: string[]
+  config: SerializedConfig
+  projectName: string
+  files: string[] | FileSpecification[]
+  environment: ContextTestEnvironment
+  providedContext: Record<string, any>
   invalidates?: string[]
 }
 
-export type ResolveIdFunction = (id: string, importer?: string) => Promise<ViteNodeResolveId | null>
-
-export interface AfterSuiteRunMeta {
-  coverage?: unknown
-}
-
-export interface WorkerRPC {
-  fetch: FetchFunction
-  resolveId: ResolveIdFunction
-  getSourceMap: (id: string, force?: boolean) => Promise<RawSourceMap | undefined>
-
-  onFinished: (files: File[], errors?: unknown[]) => void
-  onWorkerExit: (code?: number) => void
-  onPathsCollected: (paths: string[]) => void
-  onUserConsoleLog: (log: UserConsoleLog) => void
-  onUnhandledRejection: (err: unknown) => void
-  onCollected: (files: File[]) => void
-  onAfterSuiteRun: (meta: AfterSuiteRunMeta) => void
-  onTaskUpdate: (pack: TaskResultPack[]) => void
-
-  snapshotSaved: (snapshot: SnapshotResult) => void
-  resolveSnapshotPath: (testPath: string) => string
-}
-
 export interface WorkerGlobalState {
-  ctx: WorkerContext
-  config: ResolvedConfig
-  rpc: BirpcReturn<WorkerRPC>
-  current?: Test
+  ctx: ContextRPC
+  config: SerializedConfig
+  rpc: WorkerRPC
+  current?: Task
   filepath?: string
+  environment: Environment
+  environmentTeardownRun?: boolean
+  onCancel: Promise<CancelReason>
   moduleCache: ModuleCacheMap
-  browserHashMap?: Map<string, string>
-  mockMap: MockMap
+  moduleExecutionInfo?: ModuleExecutionInfo
+  providedContext: Record<string, any>
+  durations: {
+    environment: number
+    prepare: number
+  }
+  onFilterStackTrace?: (trace: string) => string
 }

@@ -20,6 +20,7 @@ const LIVING_KEYS = [
   'Comment',
   'DocumentType',
   'NodeList',
+  'RadioNodeList',
   'HTMLCollection',
   'HTMLOptionsCollection',
   'DOMStringMap',
@@ -96,6 +97,7 @@ const LIVING_KEYS = [
   'HTMLVideoElement',
   'HTMLAudioElement',
   'HTMLTrackElement',
+  'HTMLFormControlsCollection',
   'SVGElement',
   'SVGGraphicsElement',
   'SVGSVGElement',
@@ -113,6 +115,7 @@ const LIVING_KEYS = [
   'StorageEvent',
   'ProgressEvent',
   'PageTransitionEvent',
+  'SubmitEvent',
   'UIEvent',
   'FocusEvent',
   'InputEvent',
@@ -126,6 +129,7 @@ const LIVING_KEYS = [
   'Location',
   'History',
   'Screen',
+  'Crypto',
   'Performance',
   'Navigator',
   'PluginArray',
@@ -160,18 +164,33 @@ const LIVING_KEYS = [
   'AbortController',
   'AbortSignal',
 
+  'Uint8Array',
+  'Uint16Array',
+  'Uint32Array',
+  'Uint8ClampedArray',
+  'Int8Array',
+  'Int16Array',
+  'Int32Array',
+  'Float32Array',
+  'Float64Array',
+  'ArrayBuffer',
+  'DOMRectReadOnly',
+  'DOMRect',
+
   // not specified in docs, but is available
   'Image',
   'Audio',
   'Option',
+
+  'CSS',
 ]
 
 const OTHER_KEYS = [
   'addEventListener',
   'alert',
-  'atob',
+  // 'atob',
   'blur',
-  'btoa',
+  // 'btoa',
   'cancelAnimationFrame',
   /* 'clearInterval', */
   /* 'clearTimeout', */
@@ -229,4 +248,4 @@ const OTHER_KEYS = [
   'window',
 ]
 
-export const KEYS = LIVING_KEYS.concat(OTHER_KEYS)
+export const KEYS: string[] = LIVING_KEYS.concat(OTHER_KEYS)

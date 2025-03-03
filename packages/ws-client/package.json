@@ -1,12 +1,12 @@
 {
   "name": "@vitest/ws-client",
   "type": "module",
-  "version": "0.25.0",
+  "version": "3.0.7",
   "description": "WebSocket client wrapper for communicating with Vitest",
   "author": "Anthony Fu <anthonyfu117@hotmail.com>",
   "license": "MIT",
-  "funding": "https://github.com/sponsors/antfu",
-  "homepage": "https://github.com/vitest-dev/vitest#readme",
+  "funding": "https://opencollective.com/vitest",
+  "homepage": "https://github.com/vitest-dev/vitest/tree/main/packages/ws-client#readme",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/vitest-dev/vitest.git",
@@ -18,32 +18,31 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "default": "./dist/index.js"
     }
   },
   "main": "./dist/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
-    "dist",
     "*.d.ts",
-    "*.mjs"
+    "*.mjs",
+    "dist"
   ],
   "engines": {
-    "node": ">=v14.16.0"
+    "node": "^18.0.0 || >=20.0.0"
   },
   "scripts": {
     "build": "rimraf dist && rollup -c",
-    "dev": "rollup -c --watch --watch.include=src/**",
-    "prepublishOnly": "pnpm build",
+    "dev": "rollup -c --watch --watch.include 'src/**'",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "birpc": "^0.2.3",
-    "flatted": "^3.2.7",
-    "ws": "^8.11.0"
+    "birpc": "0.2.19",
+    "flatted": "^3.3.3",
+    "ws": "^8.18.1"
   },
   "devDependencies": {
-    "rollup": "^2.79.1"
+    "@vitest/runner": "workspace:*"
   }
 }

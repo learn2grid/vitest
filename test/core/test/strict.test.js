@@ -10,13 +10,16 @@ describe('vitest runs code in strict mode', () => {
 
   test('cannot defined non existing variable', () => {
     expect(() => {
-      // eslint-disable-next-line no-undef
       someGlobalVariableICameUpWith = 22
     }).toThrowError()
   })
 
   test('cannot redefine getter', () => {
-    const obj2 = { get x() { return 17 } }
+    const obj2 = {
+      get x() {
+        return 17
+      },
+    }
     expect(() => {
       obj2.x = 5
     }).toThrowError(TypeError)

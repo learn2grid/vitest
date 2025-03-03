@@ -1,5 +1,4 @@
-import fetch from 'node-fetch-native'
-import { expect } from 'vitest'
+import { afterEach, beforeEach, expect, test } from 'vitest'
 
 beforeEach(async () => {
   await new Promise((resolve) => {
@@ -18,7 +17,7 @@ afterEach(async () => {
 })
 
 test('server running', async () => {
-  const res = await (await fetch('http://localhost:9876')).text()
+  const res = await (await fetch('http://0.0.0.0:9876')).text()
   expect(res).toBe('Hello Vitest\n')
 })
 

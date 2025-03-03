@@ -1,37 +1,32 @@
-import { builtinModules } from 'module'
-import esbuild from 'rollup-plugin-esbuild'
-import dts from 'rollup-plugin-dts'
+import { builtinModules, createRequire } from 'node:module'
 import commonjs from '@rollup/plugin-commonjs'
 import json from '@rollup/plugin-json'
-import alias from '@rollup/plugin-alias'
 import nodeResolve from '@rollup/plugin-node-resolve'
 import { join } from 'pathe'
-import pkg from './package.json'
+import dts from 'rollup-plugin-dts'
+import esbuild from 'rollup-plugin-esbuild'
+
+const require = createRequire(import.meta.url)
+const pkg = require('./package.json')
 
 const entries = {
   index: 'src/index.ts',
+  provider: 'src/provider.ts',
 }
 
 const external = [
   ...builtinModules,
   ...Object.keys(pkg.dependencies || {}),
   ...Object.keys(pkg.peerDependencies || {}),
-  'vitest',
-  'vitest/node',
-  'vitest/config',
+  /^@?vitest(\/|$)/,
 ]
 
 const plugins = [
-  alias({
-    entries: [
-      { find: /^node:(.+)$/, replacement: '$1' },
-    ],
-  }),
   nodeResolve(),
   json(),
   commonjs(),
   esbuild({
-    target: 'node14',
+    target: 'node18',
   }),
 ]
 
@@ -53,8 +48,6 @@ export default () => [
       format: 'esm',
     },
     external,
-    plugins: [
-      dts({ respectExternal: true }),
-    ],
+    plugins: [dts({ respectExternal: true })],
   },
 ]
