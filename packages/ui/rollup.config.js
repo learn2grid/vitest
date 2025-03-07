@@ -1,63 +1,67 @@
-import { builtinModules } from 'module'
-import esbuild from 'rollup-plugin-esbuild'
-import dts from 'rollup-plugin-dts'
-import resolve from '@rollup/plugin-node-resolve'
+import { builtinModules, createRequire } from 'node:module'
 import commonjs from '@rollup/plugin-commonjs'
 import json from '@rollup/plugin-json'
-import alias from '@rollup/plugin-alias'
-import pkg from './package.json'
+import resolve from '@rollup/plugin-node-resolve'
+import { defineConfig } from 'rollup'
+import esbuild from 'rollup-plugin-esbuild'
+import { createDtsUtils } from '../../scripts/build-utils.js'
 
-const entry = [
-  './node/index.ts',
-]
+const require = createRequire(import.meta.url)
+const pkg = require('./package.json')
 
 const external = [
   ...builtinModules,
   ...Object.keys(pkg.dependencies),
   ...Object.keys(pkg.peerDependencies || {}),
   'worker_threads',
+  'node:worker_threads',
+  /^@?vitest(\/|$)/,
+  'vite',
 ]
 
-export default () => [
-  {
-    input: entry,
-    output: {
-      dir: 'dist',
-      format: 'esm',
+const dtsUtils = createDtsUtils()
+
+export default () => {
+  return defineConfig([
+    {
+      input: {
+        index: `./node/index.ts`,
+        reporter: `./node/reporter.ts`,
+      },
+      output: {
+        dir: 'dist',
+        format: 'esm',
+      },
+      external,
+      plugins: [
+        ...dtsUtils.isolatedDecl(),
+        resolve({
+          preferBuiltins: true,
+        }),
+        json(),
+        commonjs(),
+        esbuild({
+          target: 'node18',
+        }),
+      ],
+      onwarn,
     },
-    external,
-    plugins: [
-      alias({
-        entries: [
-          { find: /^node:(.+)$/, replacement: '$1' },
-        ],
-      }),
-      resolve({
-        preferBuiltins: true,
-      }),
-      json(),
-      commonjs(),
-      esbuild({
-        target: 'node14',
-      }),
-    ],
-    onwarn,
-  },
-  {
-    input: entry,
-    output: {
-      file: 'dist/index.d.ts',
-      format: 'esm',
+    {
+      input: 'dist/.types/index.d.ts',
+      output: {
+        dir: 'dist',
+        entryFileNames: '[name].ts',
+        format: 'esm',
+      },
+      external,
+      plugins: dtsUtils.dts(),
     },
-    external,
-    plugins: [
-      dts(),
-    ],
-  },
-]
+  ])
+}
 
 function onwarn(message) {
-  if (['EMPTY_BUNDLE', 'CIRCULAR_DEPENDENCY'].includes(message.code))
+  if (['EMPTY_BUNDLE', 'CIRCULAR_DEPENDENCY'].includes(message.code)) {
     return
+  }
   console.error(message)
 }

@@ -1,9 +1,13 @@
-import esbuild from 'rollup-plugin-esbuild'
-import dts from 'rollup-plugin-dts'
+import { createRequire } from 'node:module'
 import commonjs from '@rollup/plugin-commonjs'
 import json from '@rollup/plugin-json'
-import alias from '@rollup/plugin-alias'
-import pkg from './package.json'
+import nodeResolve from '@rollup/plugin-node-resolve'
+import { defineConfig } from 'rollup'
+import esbuild from 'rollup-plugin-esbuild'
+import { createDtsUtils } from '../../scripts/build-utils.js'
+
+const require = createRequire(import.meta.url)
+const pkg = require('./package.json')
 
 const entries = {
   index: 'src/index.ts',
@@ -13,25 +17,23 @@ const entries = {
 const external = [
   ...Object.keys(pkg.dependencies || {}),
   ...Object.keys(pkg.peerDependencies || {}),
-  'vitest',
-  'vitest/node',
+  /^@?vitest(\/|$)/,
   'vite-node/utils',
 ]
 
+const dtsUtils = createDtsUtils()
+
 const plugins = [
-  alias({
-    entries: [
-      { find: /^node:(.+)$/, replacement: '$1' },
-    ],
-  }),
+  ...dtsUtils.isolatedDecl(),
   json(),
+  nodeResolve(),
   commonjs(),
   esbuild({
-    target: 'node14',
+    target: 'node18',
   }),
 ]
 
-export default () => [
+export default () => defineConfig([
   {
     input: entries,
     output: {
@@ -42,15 +44,13 @@ export default () => [
     plugins,
   },
   {
-    input: entries,
+    input: dtsUtils.dtsInput({ pure: '' }),
     output: {
-      dir: process.cwd(),
+      dir: 'dist',
       entryFileNames: '[name].d.ts',
       format: 'esm',
     },
     external,
-    plugins: [
-      dts({ respectExternal: true }),
-    ],
+    plugins: dtsUtils.dts(),
   },
-]
+])

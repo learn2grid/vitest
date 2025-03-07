@@ -1,8 +1,12 @@
 /// <reference types="vite-plugin-pages/client" />
 
-import { createRouter as _createRouter, createWebHistory } from 'vue-router'
-import FloatingVue, { VTooltip } from 'floating-vue'
+import type { Directive } from 'vue'
+import FloatingVue, { vTooltip } from 'floating-vue'
 import routes from 'virtual:generated-pages'
+import {
+  createRouter as _createRouter,
+  createWebHashHistory,
+} from 'vue-router'
 import 'd3-graph-controller/default.css'
 import 'splitpanes/dist/splitpanes.css'
 import '@unocss/reset/tailwind.css'
@@ -12,16 +16,18 @@ import './styles/main.css'
 import 'floating-vue/dist/style.css'
 import 'uno.css'
 
-export const directives = {
-  tooltip: VTooltip,
+export const directives: Record<string, Directive> = {
+  tooltip: vTooltip,
 }
 
 FloatingVue.options.instantMove = true
 FloatingVue.options.distance = 10
 
-export const createRouter = () => _createRouter({
-  history: createWebHistory(import.meta.env.BASE_URL),
-  routes,
-})
+export function createRouter() {
+  return _createRouter({
+    history: createWebHashHistory(),
+    routes,
+  })
+}
 
 export const plugins = [createRouter]

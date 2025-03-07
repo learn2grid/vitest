@@ -1,92 +1,134 @@
-import { createRequire } from 'module'
-import { fileURLToPath, pathToFileURL } from 'url'
-import vm from 'vm'
-import { dirname, extname, isAbsolute, resolve } from 'pathe'
-import { isNodeBuiltin } from 'mlly'
-import createDebug from 'debug'
-import { isPrimitive, mergeSlashes, normalizeModuleId, normalizeRequestId, slash, toFilePath } from './utils'
 import type { HotContext, ModuleCache, ViteNodeRunnerOptions } from './types'
+
+import { createRequire } from 'node:module'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import vm from 'node:vm'
+import createDebug from 'debug'
+import { extractSourceMap } from './source-map'
+import {
+  cleanUrl,
+  createImportMetaEnvProxy,
+  isInternalRequest,
+  isNodeBuiltin,
+  isPrimitive,
+  normalizeModuleId,
+  normalizeRequestId,
+  slash,
+  toFilePath,
+} from './utils'
+
+const { setTimeout, clearTimeout } = globalThis
 
 const debugExecute = createDebug('vite-node:client:execute')
 const debugNative = createDebug('vite-node:client:native')
 
-export const DEFAULT_REQUEST_STUBS = {
-  '/@vite/client': {
-    injectQuery: (id: string) => id,
-    createHotContext() {
-      return {
-        accept: () => {},
-        prune: () => {},
-        dispose: () => {},
-        decline: () => {},
-        invalidate: () => {},
-        on: () => {},
-      }
-    },
-    updateStyle(id: string, css: string) {
-      if (typeof document === 'undefined')
-        return
-
-      const element = document.getElementById(id)
-      if (element)
-        element.remove()
-
-      const head = document.querySelector('head')
-      const style = document.createElement('style')
-      style.setAttribute('type', 'text/css')
-      style.id = id
-      style.innerHTML = css
-      head?.appendChild(style)
-    },
+const clientStub = {
+  injectQuery: (id: string) => id,
+  createHotContext: () => {
+    return {
+      accept: () => {},
+      prune: () => {},
+      dispose: () => {},
+      decline: () => {},
+      invalidate: () => {},
+      on: () => {},
+      send: () => {},
+    }
   },
+  updateStyle: () => {},
+  removeStyle: () => {},
+}
+
+const env = createImportMetaEnvProxy()
+
+export const DEFAULT_REQUEST_STUBS: Record<string, Record<string, unknown>> = {
+  '/@vite/client': clientStub,
+  '@vite/client': clientStub,
 }
 
 export class ModuleCacheMap extends Map<string, ModuleCache> {
-  normalizePath(fsPath: string) {
+  normalizePath(fsPath: string): string {
     return normalizeModuleId(fsPath)
   }
 
   /**
    * Assign partial data to the map
    */
-  update(fsPath: string, mod: Partial<ModuleCache>) {
+  update(fsPath: string, mod: ModuleCache): this {
     fsPath = this.normalizePath(fsPath)
-    if (!super.has(fsPath))
-      super.set(fsPath, mod)
-    else
+    if (!super.has(fsPath)) {
+      this.setByModuleId(fsPath, mod)
+    }
+    else {
       Object.assign(super.get(fsPath) as ModuleCache, mod)
+    }
     return this
   }
 
-  set(fsPath: string, mod: ModuleCache) {
-    fsPath = this.normalizePath(fsPath)
-    return super.set(fsPath, mod)
+  setByModuleId(modulePath: string, mod: ModuleCache): this {
+    return super.set(modulePath, mod)
   }
 
-  get(fsPath: string): ModuleCache {
-    fsPath = this.normalizePath(fsPath)
-    if (!super.has(fsPath))
-      super.set(fsPath, {})
-    return super.get(fsPath)!
+  set(fsPath: string, mod: ModuleCache): this {
+    return this.setByModuleId(this.normalizePath(fsPath), mod)
   }
 
-  delete(fsPath: string) {
-    fsPath = this.normalizePath(fsPath)
-    return super.delete(fsPath)
+  getByModuleId(modulePath: string) {
+    if (!super.has(modulePath)) {
+      this.setByModuleId(modulePath, {})
+    }
+
+    const mod = super.get(modulePath)!
+    if (!mod.imports) {
+      Object.assign(mod, {
+        imports: new Set(),
+        importers: new Set(),
+      })
+    }
+    return mod as ModuleCache &
+      Required<Pick<ModuleCache, 'imports' | 'importers'>>
+  }
+
+  get(fsPath: string): ModuleCache & Required<Pick<ModuleCache, 'importers' | 'imports'>> {
+    return this.getByModuleId(this.normalizePath(fsPath))
+  }
+
+  deleteByModuleId(modulePath: string): boolean {
+    return super.delete(modulePath)
+  }
+
+  delete(fsPath: string): boolean {
+    return this.deleteByModuleId(this.normalizePath(fsPath))
+  }
+
+  invalidateModule(mod: ModuleCache) {
+    delete mod.evaluated
+    delete mod.resolving
+    delete mod.promise
+    delete mod.exports
+    mod.importers?.clear()
+    mod.imports?.clear()
+    return true
   }
 
   /**
    * Invalidate modules that dependent on the given modules, up to the main entry
    */
-  invalidateDepTree(ids: string[] | Set<string>, invalidated = new Set<string>()) {
+  invalidateDepTree(
+    ids: string[] | Set<string>,
+    invalidated: Set<string> = new Set<string>(),
+  ): Set<string> {
     for (const _id of ids) {
       const id = this.normalizePath(_id)
-      if (invalidated.has(id))
+      if (invalidated.has(id)) {
         continue
+      }
       invalidated.add(id)
       const mod = super.get(id)
-      if (mod?.importers)
+      if (mod?.importers) {
         this.invalidateDepTree(mod.importers, invalidated)
+      }
       super.delete(id)
     }
     return invalidated
@@ -95,16 +137,22 @@ export class ModuleCacheMap extends Map<string, ModuleCache> {
   /**
    * Invalidate dependency modules of the given modules, down to the bottom-level dependencies
    */
-  invalidateSubDepTree(ids: string[] | Set<string>, invalidated = new Set<string>()) {
+  invalidateSubDepTree(
+    ids: string[] | Set<string>,
+    invalidated: Set<string> = new Set<string>(),
+  ): Set<string> {
     for (const _id of ids) {
       const id = this.normalizePath(_id)
-      if (invalidated.has(id))
+      if (invalidated.has(id)) {
         continue
+      }
       invalidated.add(id)
       const subIds = Array.from(super.entries())
-        .filter(([,mod]) => mod.importers?.has(id))
+        .filter(([, mod]) => mod.importers?.has(id))
         .map(([key]) => key)
-      subIds.length && this.invalidateSubDepTree(subIds, invalidated)
+      if (subIds.length) {
+        this.invalidateSubDepTree(subIds, invalidated)
+      }
       super.delete(id)
     }
     return invalidated
@@ -113,20 +161,21 @@ export class ModuleCacheMap extends Map<string, ModuleCache> {
   /**
    * Return parsed source map based on inlined source map of the module
    */
-  getSourceMap(id: string) {
-    const fsPath = this.normalizePath(id)
-    const cache = this.get(fsPath)
-    if (cache.map)
+  getSourceMap(id: string): import('@jridgewell/trace-mapping').EncodedSourceMap | null {
+    const cache = this.get(id)
+    if (cache.map) {
       return cache.map
-    const mapString = cache?.code?.match(/\/\/# sourceMappingURL=data:application\/json;charset=utf-8;base64,(.+)/)?.[1]
-    if (mapString) {
-      const map = JSON.parse(Buffer.from(mapString, 'base64').toString('utf-8'))
+    }
+    const map = cache.code && extractSourceMap(cache.code)
+    if (map) {
       cache.map = map
       return map
     }
     return null
   }
 }
+
+export type ModuleExecutionInfo = Map<string, { startOffset: number }>
 
 export class ViteNodeRunner {
   root: string
@@ -142,107 +191,162 @@ export class ViteNodeRunner {
   constructor(public options: ViteNodeRunnerOptions) {
     this.root = options.root ?? process.cwd()
     this.moduleCache = options.moduleCache ?? new ModuleCacheMap()
-    this.debug = options.debug ?? (typeof process !== 'undefined' ? !!process.env.VITE_NODE_DEBUG_RUNNER : false)
+    this.debug
+      = options.debug
+        ?? (typeof process !== 'undefined'
+          ? !!process.env.VITE_NODE_DEBUG_RUNNER
+          : false)
   }
 
-  async executeFile(file: string) {
-    return await this.cachedRequest(`/@fs/${slash(resolve(file))}`, [])
+  async executeFile(file: string): Promise<any> {
+    const url = `/@fs/${slash(resolve(file))}`
+    return await this.cachedRequest(url, url, [])
   }
 
-  async executeId(id: string) {
-    return await this.cachedRequest(id, [])
-  }
-
-  getSourceMap(id: string) {
-    return this.moduleCache.getSourceMap(id)
+  async executeId(rawId: string): Promise<any> {
+    const [id, url] = await this.resolveUrl(rawId)
+    return await this.cachedRequest(id, url, [])
   }
 
   /** @internal */
-  async cachedRequest(rawId: string, callstack: string[]) {
-    const id = normalizeRequestId(rawId, this.options.base)
-    const fsPath = toFilePath(id, this.root)
-
-    const mod = this.moduleCache.get(fsPath)
+  async cachedRequest(id: string, fsPath: string, callstack: string[]) {
     const importee = callstack[callstack.length - 1]
 
-    if (!mod.importers)
-      mod.importers = new Set()
-    if (importee)
-      mod.importers.add(importee)
+    const mod = this.moduleCache.get(fsPath)
+    const { imports, importers } = mod
 
-    // the callstack reference itself circularly
-    if (callstack.includes(fsPath) && mod.exports)
-      return mod.exports
+    if (importee) {
+      importers.add(importee)
+    }
 
-    // cached module
-    if (mod.promise)
-      return mod.promise
+    const getStack = () =>
+      `stack:\n${[...callstack, fsPath]
+        .reverse()
+        .map(p => `  - ${p}`)
+        .join('\n')}`
 
-    const promise = this.directRequest(id, fsPath, callstack)
-    Object.assign(mod, { promise })
+    // check circular dependency
+    if (
+      callstack.includes(fsPath)
+      || Array.from(imports.values()).some(i => importers.has(i))
+    ) {
+      if (mod.exports) {
+        return mod.exports
+      }
+    }
 
-    return await promise
+    let debugTimer: any
+    if (this.debug) {
+      debugTimer = setTimeout(
+        () =>
+          console.warn(
+            `[vite-node] module ${fsPath} takes over 2s to load.\n${getStack()}`,
+          ),
+        2000,
+      )
+    }
+
+    try {
+      // cached module
+      if (mod.promise) {
+        return await mod.promise
+      }
+
+      const promise = this.directRequest(id, fsPath, callstack)
+      Object.assign(mod, { promise, evaluated: false })
+      return await promise
+    }
+    finally {
+      mod.evaluated = true
+      if (debugTimer) {
+        clearTimeout(debugTimer)
+      }
+    }
+  }
+
+  shouldResolveId(id: string, _importee?: string): boolean {
+    return (
+      !isInternalRequest(id) && !isNodeBuiltin(id) && !id.startsWith('data:')
+    )
+  }
+
+  private async _resolveUrl(
+    id: string,
+    importer?: string,
+  ): Promise<[url: string, fsPath: string]> {
+    const dep = normalizeRequestId(id, this.options.base)
+    if (!this.shouldResolveId(dep)) {
+      return [dep, dep]
+    }
+    const { path, exists } = toFilePath(dep, this.root)
+    if (!this.options.resolveId || exists) {
+      return [dep, path]
+    }
+    const resolved = await this.options.resolveId(dep, importer)
+    // supported since Vite 5-beta.19
+    if (resolved?.meta?.['vite:alias']?.noResolved) {
+      const error = new Error(
+        `Cannot find module '${id}'${
+          importer ? ` imported from '${importer}'` : ''
+        }.`
+        + '\n\n- If you rely on tsconfig.json\'s "paths" to resolve modules, please install "vite-tsconfig-paths" plugin to handle module resolution.'
+        + '\n- Make sure you don\'t have relative aliases in your Vitest config. Use absolute paths instead. Read more: https://vitest.dev/guide/common-errors',
+      )
+      Object.defineProperty(error, 'code', {
+        value: 'ERR_MODULE_NOT_FOUND',
+        enumerable: true,
+      })
+      Object.defineProperty(error, Symbol.for('vitest.error.not_found.data'), {
+        value: { id: dep, importer },
+        enumerable: false,
+      })
+      throw error
+    }
+    const resolvedId = resolved
+      ? normalizeRequestId(resolved.id, this.options.base)
+      : dep
+    return [resolvedId, resolvedId]
+  }
+
+  async resolveUrl(id: string, importee?: string): Promise<[url: string, fsPath: string]> {
+    const resolveKey = `resolve:${id}`
+    // put info about new import as soon as possible, so we can start tracking it
+    this.moduleCache.setByModuleId(resolveKey, { resolving: true })
+    try {
+      return await this._resolveUrl(id, importee)
+    }
+    finally {
+      this.moduleCache.deleteByModuleId(resolveKey)
+    }
+  }
+
+  /** @internal */
+  async dependencyRequest(id: string, fsPath: string, callstack: string[]) {
+    return await this.cachedRequest(id, fsPath, callstack)
   }
 
   /** @internal */
   async directRequest(id: string, fsPath: string, _callstack: string[]) {
-    const callstack = [..._callstack, fsPath]
+    const moduleId = normalizeModuleId(fsPath)
+    const callstack = [..._callstack, moduleId]
 
-    const mod = this.moduleCache.get(fsPath)
+    const mod = this.moduleCache.getByModuleId(moduleId)
 
     const request = async (dep: string) => {
-      const depFsPath = toFilePath(normalizeRequestId(dep, this.options.base), this.root)
-      const getStack = () => {
-        return `stack:\n${[...callstack, depFsPath].reverse().map(p => `- ${p}`).join('\n')}`
-      }
+      const [id, depFsPath] = await this.resolveUrl(String(dep), fsPath)
+      const depMod = this.moduleCache.getByModuleId(depFsPath)
+      depMod.importers.add(moduleId)
+      mod.imports.add(depFsPath)
 
-      let debugTimer: any
-      if (this.debug)
-        debugTimer = setTimeout(() => console.warn(() => `module ${depFsPath} takes over 2s to load.\n${getStack()}`), 2000)
-
-      try {
-        if (callstack.includes(depFsPath)) {
-          const depExports = this.moduleCache.get(depFsPath)?.exports
-          if (depExports)
-            return depExports
-          throw new Error(`[vite-node] Failed to resolve circular dependency, ${getStack()}`)
-        }
-
-        return await this.cachedRequest(dep, callstack)
-      }
-      finally {
-        if (debugTimer)
-          clearTimeout(debugTimer)
-      }
+      return this.dependencyRequest(id, depFsPath, callstack)
     }
-
-    Object.defineProperty(request, 'callstack', { get: () => callstack })
-
-    const resolveId = async (dep: string, callstackPosition = 1) => {
-      // probably means it was passed as variable
-      // and wasn't transformed by Vite
-      // or some dependency name was passed
-      // runner.executeFile('@scope/name')
-      // runner.executeFile(myDynamicName)
-      if (this.options.resolveId && this.shouldResolveId(dep)) {
-        let importer = callstack[callstack.length - callstackPosition]
-        if (importer && importer.startsWith('mock:'))
-          importer = importer.slice(5)
-        const { id } = await this.options.resolveId(dep, importer) || {}
-        dep = id && isAbsolute(id) ? mergeSlashes(`/@fs/${id}`) : id || dep
-      }
-
-      return dep
-    }
-
-    id = await resolveId(id, 2)
 
     const requestStubs = this.options.requestStubs || DEFAULT_REQUEST_STUBS
-    if (id in requestStubs)
+    if (id in requestStubs) {
       return requestStubs[id]
-
-    // eslint-disable-next-line prefer-const
+    }
     let { code: transformed, externalize } = await this.options.fetchModule(id)
+
     if (externalize) {
       debugNative(externalize)
       const exports = await this.interopedImport(externalize)
@@ -250,49 +354,90 @@ export class ViteNodeRunner {
       return exports
     }
 
-    if (transformed == null)
-      throw new Error(`[vite-node] Failed to load ${id}`)
+    if (transformed == null) {
+      throw new Error(
+        `[vite-node] Failed to load "${id}" imported from ${
+          callstack[callstack.length - 2]
+        }`,
+      )
+    }
 
+    const { Object, Reflect, Symbol } = this.getContextPrimitives()
+
+    const modulePath = cleanUrl(moduleId)
     // disambiguate the `<UNIT>:/` on windows: see nodejs/node#31710
-    const url = pathToFileURL(fsPath).href
-    const meta = { url }
-    const exports: any = Object.create(null)
+    const href = pathToFileURL(modulePath).href
+    const __filename = fileURLToPath(href)
+    const __dirname = dirname(__filename)
+    const meta = {
+      url: href,
+      env,
+      filename: __filename,
+      dirname: __dirname,
+    }
+    const exports = Object.create(null)
     Object.defineProperty(exports, Symbol.toStringTag, {
       value: 'Module',
       enumerable: false,
       configurable: false,
     })
-    // this prosxy is triggered only on exports.name and module.exports access
+    const SYMBOL_NOT_DEFINED = Symbol('not defined')
+    let moduleExports: unknown = SYMBOL_NOT_DEFINED
+    // this proxy is triggered only on exports.{name} and module.exports access
+    // inside the module itself. imported module is always "exports"
     const cjsExports = new Proxy(exports, {
-      get(_, p, receiver) {
-        return Reflect.get(exports, p, receiver)
+      get: (target, p, receiver) => {
+        if (Reflect.has(target, p)) {
+          return Reflect.get(target, p, receiver)
+        }
+        return Reflect.get(Object.prototype, p, receiver)
       },
-      set(_, p, value) {
-        if (!Reflect.has(exports, 'default'))
+      getPrototypeOf: () => Object.prototype,
+      set: (_, p, value) => {
+        // treat "module.exports =" the same as "exports.default =" to not have nested "default.default",
+        // so "exports.default" becomes the actual module
+        if (
+          p === 'default'
+          && this.shouldInterop(modulePath, { default: value })
+          && cjsExports !== value
+        ) {
+          exportAll(cjsExports, value)
+          exports.default = value
+          return true
+        }
+
+        if (!Reflect.has(exports, 'default')) {
           exports.default = {}
+        }
 
         // returns undefined, when accessing named exports, if default is not an object
         // but is still present inside hasOwnKeys, this is Node behaviour for CJS
-        if (exports.default === null || typeof exports.default !== 'object') {
+        if (
+          moduleExports !== SYMBOL_NOT_DEFINED
+          && isPrimitive(moduleExports)
+        ) {
           defineExport(exports, p, () => undefined)
           return true
         }
 
-        exports.default[p] = value
-        if (p !== 'default')
+        if (!isPrimitive(exports.default)) {
+          exports.default[p] = value
+        }
+
+        if (p !== 'default') {
           defineExport(exports, p, () => value)
+        }
 
         return true
       },
     })
 
     Object.assign(mod, { code: transformed, exports })
-
-    const __filename = fileURLToPath(url)
     const moduleProxy = {
       set exports(value) {
         exportAll(cjsExports, value)
         exports.default = value
+        moduleExports = value
       },
       get exports() {
         return cjsExports
@@ -305,8 +450,11 @@ export class ViteNodeRunner {
       Object.defineProperty(meta, 'hot', {
         enumerable: true,
         get: () => {
-          hotContext ||= this.options.createHotContext?.(this, `/@fs/${fsPath}`)
+          hotContext ||= this.options.createHotContext?.(this, moduleId)
           return hotContext
+        },
+        set: (value) => {
+          hotContext = value
         },
       })
     }
@@ -314,7 +462,7 @@ export class ViteNodeRunner {
     // Be careful when changing this
     // changing context will change amount of code added on line :114 (vm.runInThisContext)
     // this messes up sourcemaps for coverage
-    // adjust `offset` variable in packages/coverage-c8/src/provider.ts#86 if you do change this
+    // adjust `WRAPPER_LENGTH` variable in packages/coverage-v8/src/provider.ts if you do change this
     const context = this.prepareContext({
       // esm transformed by Vite
       __vite_ssr_import__: request,
@@ -322,92 +470,134 @@ export class ViteNodeRunner {
       __vite_ssr_exports__: exports,
       __vite_ssr_exportAll__: (obj: any) => exportAll(exports, obj),
       __vite_ssr_import_meta__: meta,
-      __vitest_resolve_id__: resolveId,
 
       // cjs compact
-      require: createRequire(url),
+      require: createRequire(href),
       exports: cjsExports,
       module: moduleProxy,
       __filename,
-      __dirname: dirname(__filename),
+      __dirname,
     })
 
     debugExecute(__filename)
 
     // remove shebang
-    if (transformed[0] === '#')
-      transformed = transformed.replace(/^\#\!.*/, s => ' '.repeat(s.length))
+    if (transformed[0] === '#') {
+      transformed = transformed.replace(/^#!.*/, s => ' '.repeat(s.length))
+    }
 
-    // add 'use strict' since ESM enables it by default
-    const codeDefinition = `'use strict';async (${Object.keys(context).join(',')})=>{{`
-    const code = `${codeDefinition}${transformed}\n}}`
-    const fn = vm.runInThisContext(code, {
-      filename: fsPath,
-      lineOffset: 0,
-      columnOffset: -codeDefinition.length,
-    })
-
-    await fn(...Object.values(context))
+    await this.runModule(context, transformed)
 
     return exports
   }
 
-  prepareContext(context: Record<string, any>) {
-    return context
+  protected getContextPrimitives(): {
+    Object: ObjectConstructor
+    Reflect: typeof Reflect
+    Symbol: SymbolConstructor
+  } {
+    return { Object, Reflect, Symbol }
   }
 
-  shouldResolveId(dep: string) {
-    if (isNodeBuiltin(dep) || dep in (this.options.requestStubs || DEFAULT_REQUEST_STUBS) || dep.startsWith('/@vite'))
-      return false
+  protected async runModule(context: Record<string, any>, transformed: string): Promise<void> {
+    // add 'use strict' since ESM enables it by default
+    const codeDefinition = `'use strict';async (${Object.keys(context).join(
+      ',',
+    )})=>{{`
+    const code = `${codeDefinition}${transformed}\n}}`
+    const options = {
+      filename: context.__filename,
+      lineOffset: 0,
+      columnOffset: -codeDefinition.length,
+    }
 
-    return !isAbsolute(dep) || !extname(dep)
+    this.options.moduleExecutionInfo?.set(options.filename, { startOffset: codeDefinition.length })
+
+    const fn = vm.runInThisContext(code, options)
+    await fn(...Object.values(context))
+  }
+
+  prepareContext(context: Record<string, any>): Record<string, any> {
+    return context
   }
 
   /**
    * Define if a module should be interop-ed
    * This function mostly for the ability to override by subclass
    */
-  shouldInterop(path: string, mod: any) {
-    if (this.options.interopDefault === false)
+  shouldInterop(path: string, mod: any): boolean {
+    if (this.options.interopDefault === false) {
       return false
+    }
     // never interop ESM modules
     // TODO: should also skip for `.js` with `type="module"`
     return !path.endsWith('.mjs') && 'default' in mod
   }
 
+  protected importExternalModule(path: string): Promise<any> {
+    return import(path)
+  }
+
   /**
    * Import a module and interop it
    */
-  async interopedImport(path: string) {
-    const mod = await import(path)
+  async interopedImport(path: string): Promise<any> {
+    const importedModule = await this.importExternalModule(path)
 
-    if (this.shouldInterop(path, mod)) {
-      const tryDefault = this.hasNestedDefault(mod)
-      return new Proxy(mod, {
-        get: proxyMethod('get', tryDefault),
-        set: proxyMethod('set', tryDefault),
-        has: proxyMethod('has', tryDefault),
-        deleteProperty: proxyMethod('deleteProperty', tryDefault),
-      })
+    if (!this.shouldInterop(path, importedModule)) {
+      return importedModule
     }
 
-    return mod
-  }
+    const { mod, defaultExport } = interopModule(importedModule)
 
-  hasNestedDefault(target: any) {
-    return '__esModule' in target && target.__esModule && 'default' in target.default
+    return new Proxy(mod, {
+      get(mod, prop) {
+        if (prop === 'default') {
+          return defaultExport
+        }
+        return mod[prop] ?? defaultExport?.[prop]
+      },
+      has(mod, prop) {
+        if (prop === 'default') {
+          return defaultExport !== undefined
+        }
+        return prop in mod || (defaultExport && prop in defaultExport)
+      },
+      getOwnPropertyDescriptor(mod, prop) {
+        const descriptor = Reflect.getOwnPropertyDescriptor(mod, prop)
+        if (descriptor) {
+          return descriptor
+        }
+        if (prop === 'default' && defaultExport !== undefined) {
+          return {
+            value: defaultExport,
+            enumerable: true,
+            configurable: true,
+          }
+        }
+      },
+    })
   }
 }
 
-function proxyMethod(name: 'get' | 'set' | 'has' | 'deleteProperty', tryDefault: boolean) {
-  return function (target: any, key: string | symbol, ...args: [any?, any?]) {
-    const result = Reflect[name](target, key, ...args)
-    if (isPrimitive(target.default))
-      return result
-    if ((tryDefault && key === 'default') || typeof result === 'undefined')
-      return Reflect[name](target.default, key, ...args)
-    return result
+function interopModule(mod: any) {
+  if (isPrimitive(mod)) {
+    return {
+      mod: { default: mod },
+      defaultExport: mod,
+    }
   }
+
+  let defaultExport = 'default' in mod ? mod.default : mod
+
+  if (!isPrimitive(defaultExport) && '__esModule' in defaultExport) {
+    mod = defaultExport
+    if ('default' in defaultExport) {
+      defaultExport = defaultExport.default
+    }
+  }
+
+  return { mod, defaultExport }
 }
 
 // keep consistency with Vite on how exports are defined
@@ -422,18 +612,24 @@ function defineExport(exports: any, key: string | symbol, value: () => any) {
 function exportAll(exports: any, sourceModule: any) {
   // #1120 when a module exports itself it causes
   // call stack error
-  if (exports === sourceModule)
+  if (exports === sourceModule) {
     return
+  }
 
-  if (typeof sourceModule !== 'object' || Array.isArray(sourceModule) || !sourceModule)
+  if (
+    isPrimitive(sourceModule)
+    || Array.isArray(sourceModule)
+    || sourceModule instanceof Promise
+  ) {
     return
+  }
 
   for (const key in sourceModule) {
     if (key !== 'default') {
       try {
         defineExport(exports, key, () => sourceModule[key])
       }
-      catch (_err) { }
+      catch {}
     }
   }
 }

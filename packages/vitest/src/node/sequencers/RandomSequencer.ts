@@ -1,12 +1,11 @@
-import { shuffle } from '../../utils'
+import type { TestSpecification } from '../spec'
+import { shuffle } from '@vitest/utils'
 import { BaseSequencer } from './BaseSequencer'
 
 export class RandomSequencer extends BaseSequencer {
-  public async sort(files: string[]) {
+  public async sort(files: TestSpecification[]): Promise<TestSpecification[]> {
     const { sequence } = this.ctx.config
 
-    const seed = sequence?.seed ?? Date.now()
-
-    return shuffle(files, seed)
+    return shuffle(files, sequence.seed)
   }
 }

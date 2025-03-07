@@ -2,7 +2,14 @@
 
 > Web Worker support for Vitest testing. Doesn't require JSDom.
 
-Simulates Web Worker, but in the same thread. Supports both `new Worker(url)` and `import from './worker?worker`.
+Simulates Web Worker, but in the same thread.
+
+Supported:
+
+- `new Worker(path)`
+- `new SharedWorker(path)`
+- `import MyWorker from './worker?worker'`
+- `import MySharedWorker from './worker?sharedworker'`
 
 ## Installing
 
@@ -14,7 +21,7 @@ npm install -D @vitest/web-worker
 pnpm install -D @vitest/web-worker
 
 # with yarn
-yarn install -D @vitest/web-worker
+yarn add --dev @vitest/web-worker
 ```
 
 ## Usage
@@ -33,18 +40,37 @@ export default defineConfig({
 })
 ```
 
+You can also import `defineWebWorkers` from `@vitest/web-worker/pure` to define workers, whenever you need:
+
+```js
+import { defineWebWorkers } from '@vitest/web-worker/pure'
+
+if (process.env.SUPPORT_WORKERS) {
+  defineWebWorkers({ clone: 'none' })
+}
+```
+
+It accepts options:
+
+- `clone`: `'native' | 'ponyfill' | 'none'`. Defines how should `Worker` clone message, when transferring data. Applies only to `Worker` communication. `SharedWorker` uses `MessageChannel` from Node's `worker_threads` module, and is not configurable.
+
+> **Note**
+> Requires Node 17, if you want to use native `structuredClone`. Otherwise, it fallbacks to [polyfill](https://github.com/ungap/structured-clone), if not specified as `none`. You can also configure this option with `VITEST_WEB_WORKER_CLONE` environmental variable.
+
 ## Examples
 
 ```ts
 // worker.ts
-import '@vitest/web-worker'
-import MyWorker from '../worker?worker'
-
 self.onmessage = (e) => {
   self.postMessage(`${e.data} world`)
 }
+```
 
+```ts
 // worker.test.ts
+import '@vitest/web-worker'
+import MyWorker from '../worker?worker'
+
 let worker = new MyWorker()
 // new Worker is also supported
 worker = new Worker(new URL('../src/worker.ts', import.meta.url))
@@ -55,6 +81,10 @@ worker.onmessage = (e) => {
 }
 ```
 
-## Notice
+## Notes
 
-- Does not support `onmessage = () => {}`. Please, use `self.onmessage = () => {}`.
+- Worker does not support `onmessage = () => {}`. Please, use `self.onmessage = () => {}`.
+- Shared worker does not support `onconnect = () => {}`. Please, use `self.onconnect = () => {}`.
+- Transferring Buffer will not change its `byteLength`.
+- You have access to shared global space as your tests.
+- You can debug your worker, using `DEBUG=vitest:web-worker` environmental variable.
